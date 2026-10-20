@@ -1,5 +1,5 @@
 var APP_PREFIX = 'tally_beast_erp_';
-var VERSION = 'v6';
+var VERSION = 'v7';
 var CACHE_NAME = APP_PREFIX + VERSION;
 
 var CORE_ASSETS = [
