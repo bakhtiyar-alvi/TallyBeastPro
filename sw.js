@@ -1,26 +1,31 @@
 var APP_PREFIX = 'tally_beast_erp_';
-var VERSION = 'v5.0';
+var VERSION = 'v6';
 var CACHE_NAME = APP_PREFIX + VERSION;
 
 var CORE_ASSETS = [
-    './',
-    './index.html',
-    './manifest.json',
-    './Logo.png',
+    '/',
+    '/index.html',
+    '/manifest.json',
+    '/Logo.png',
     'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
     'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
     'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'
 ];
 
-// Install Event: Pre-cache core shell and CDN assets
+// Install Event: Pre-cache Vercel root shell and CDN libraries
 self.addEventListener('install', function(event) {
     self.skipWaiting();
     event.waitUntil(
         caches.open(CACHE_NAME).then(function(cache) {
             return Promise.all(
                 CORE_ASSETS.map(function(url) {
-                    return cache.add(url).catch(function(err) {
-                        console.warn('SW: Skipped caching asset:', url, err);
+                    var req = new Request(url, { mode: url.indexOf('http') === 0 ? 'cors' : 'same-origin' });
+                    return fetch(req).then(function(res) {
+                        if (res && res.status === 200) {
+                            return cache.put(req, res);
+                        }
+                    }).catch(function(err) {
+                        console.warn('SW: Skipped pre-caching asset:', url, err);
                     });
                 })
             );
@@ -28,14 +33,13 @@ self.addEventListener('install', function(event) {
     );
 });
 
-// Activate Event: Clean up legacy caches and take immediate control
+// Activate Event: Purge old caches immediately after a new GitHub -> Vercel deploy
 self.addEventListener('activate', function(event) {
     event.waitUntil(
         caches.keys().then(function(keyList) {
             return Promise.all(
                 keyList.map(function(key) {
                     if (key.indexOf(APP_PREFIX) === 0 && key !== CACHE_NAME) {
-                        console.log('SW: Deleting old cache:', key);
                         return caches.delete(key);
                     }
                 })
@@ -46,60 +50,59 @@ self.addEventListener('activate', function(event) {
     );
 });
 
-// Fetch Event: Optimized routing strategies
+// Fetch Event: Smart routing for Vercel SPA, CDNs, and Google Drive OAuth
 self.addEventListener('fetch', function(event) {
     var req = event.request;
     var url = new URL(req.url);
 
-    // Only handle GET requests
     if (req.method !== 'GET') return;
 
-    // Bypass Google Accounts / Sign-In / Auth APIs to prevent credential caching bugs
+    // 1. Never intercept Google Drive API or OAuth Sign-In requests
     if (url.hostname.indexOf('googleapis.com') !== -1 ||
         url.hostname.indexOf('accounts.google.com') !== -1 ||
         url.hostname.indexOf('gstatic.com') !== -1) {
         return;
     }
 
-    // Strategy for CDNs and QR code generators: Cache First, fallback to Network & update cache
+    // 2. Cache-First for CDN libraries (PDF.js, SheetJS) & QR images
     if (url.hostname.indexOf('cdnjs.cloudflare.com') !== -1 ||
         url.hostname.indexOf('api.qrserver.com') !== -1) {
         event.respondWith(
             caches.match(req, { ignoreSearch: true }).then(function(cachedRes) {
                 if (cachedRes) return cachedRes;
                 return fetch(req).then(function(netRes) {
-                    if (netRes && netRes.status === 200) {
+                    if (netRes && (netRes.status === 200 || netRes.type === 'opaque')) {
                         var clone = netRes.clone();
-                        caches.open(CACHE_NAME).then(function(cache) { 
-                            cache.put(req, clone); 
+                        caches.open(CACHE_NAME).then(function(cache) {
+                            cache.put(req, clone);
                         });
                     }
                     return netRes;
                 }).catch(function() {
-                    // Return nothing if offline and not in cache for external assets
-                    return new Response('', { status: 408, statusText: 'Offline / CDN unavailable' });
+                    return new Response('', { status: 408, statusText: 'Offline' });
                 });
             })
         );
         return;
     }
 
-    // Strategy for local app files: Network First with Cache Fallback
+    // 3. Network-First with Offline Cache Fallback for Vercel app shell (/ and /index.html)
     event.respondWith(
         fetch(req).then(function(networkResponse) {
             if (networkResponse && networkResponse.status === 200) {
                 var responseClone = networkResponse.clone();
-                caches.open(CACHE_NAME).then(function(cache) { 
-                    cache.put(req, responseClone); 
+                caches.open(CACHE_NAME).then(function(cache) {
+                    cache.put(req, responseClone);
                 });
             }
             return networkResponse;
         }).catch(function() {
             return caches.match(req, { ignoreSearch: true }).then(function(cachedResponse) {
                 if (cachedResponse) return cachedResponse;
-                // Fallback to index.html for SPA navigation requests when offline
                 if (req.mode === 'navigate') {
-                    return caches.match('./index.html', { ignoreSearch: true });
+                    return caches.match('/index.html', { ignoreSearch: true }).then(function(idxRes) {
+                        return idxRes || caches.match('/', { ignoreSearch: true });
+                    });
                 }
             });
         })
